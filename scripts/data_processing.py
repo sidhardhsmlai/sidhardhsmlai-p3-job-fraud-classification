@@ -5,124 +5,130 @@ from sklearn.pipeline import Pipeline # Organizes processing steps
 from sklearn.compose import ColumnTransformer # Applies steps to different columns
 from sklearn.feature_extraction.text import TfidfVectorizer # Converts text to numbers
 from sklearn.impute import SimpleImputer # Fills in missing values
-from sklearn.preprocessing import OneHotEncoder # Converts categories to numbers
+from sklearn.preprocessing import OneHotEncoder, FunctionTransformer # Custom function application
+# NLTK and Regex for custom text cleaning
+from nltk.corpus import stopwords 
+from nltk.stem import WordNetLemmatizer 
+import re 
 
-#making preprocessing logic importable and reusable
+# --- FUNCTIONS ---
+
+# Function 1: Custom Text Cleaning (The Logic)
+def custom_cleaner_logic(text):
+    """Performs full text cleanup on a single string."""
+    # Check if input is a string
+    if not isinstance(text, str):
+        return ''
+    
+    # Remove HTML tags
+    text = re.sub('<[^>]*>', '', text)
+    # Remove special characters and numbers
+    text = re.sub('[^a-zA-Z]', ' ', text) 
+    # Remove single characters
+    text = re.sub(r'\b[a-zA-Z]\b', '', text)
+    # Convert text to lowercase
+    text = text.lower()
+    
+    # Tokenize and remove stop words
+    words = text.split()
+    # Note: stopwords must be downloaded via nltk.download('stopwords')
+    try:
+        stop_words = set(stopwords.words('english'))
+        words = [w for w in words if not w in stop_words]
+    except LookupError:
+        # Fallback if NLTK data isn't found
+        pass
+    
+    # Lemmatization
+    try:
+        lemmatizer = WordNetLemmatizer()
+        words = [lemmatizer.lemmatize(w) for w in words]
+    except LookupError:
+        pass
+    
+    return ' '.join(words)
+
+# Wrapper function to apply cleaner to a list/series
+def text_cleaning_wrapper(data):
+    return [custom_cleaner_logic(x) for x in data]
+
+# Function 2: Refactored Data Combining (Fixes D.R.Y. Violation)
+def clean_and_combine_text(df):
+    """
+    Cleans and combines the text columns into a single 'combined_text' column.
+    """
+    print("Running text cleaning and combining...")
+
+    # We must fill NaNs *before* combining
+    text_cols_to_combine = ['title', 'description', 'requirements']
+    df[text_cols_to_combine] = df[text_cols_to_combine].fillna('')
+
+    # Create the *single* text column that our pipeline expects
+    df['combined_text'] = df[text_cols_to_combine].apply(lambda x: ' '.join(x), axis=1)
+
+    # Return the *modified* DataFrame
+    return df
+
+# Function 3: Preprocessor Logic (The Engine Builder)
 def create_preprocessor():
-    #Partner A
-    #making preprocessing logic importable and reusable
+    # --- Define the Text Pipeline ---
     text_pipeline = Pipeline(steps=[
+        # STEP 1: Apply custom cleaning row-by-row
+        ('custom_clean', FunctionTransformer(text_cleaning_wrapper, validate=False)), 
         
-         # Step 1: Convert text to numbers using TF-IDF
+        # STEP 2: The TfidfVectorizer
         ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1, 2)))
     ])
     
-    # [FIX] This line *must* be indented to be *inside* the function
-    # --- Task 2.2.4: Define the Categorical Pipeline ---
-    # This "conveyor belt" handles all our category columns
+    # --- Define the Categorical Pipeline ---
     categorical_pipeline = Pipeline(steps=[
-        # Step 1: Fill missing categories with the most common one
         ('imputer_cat', SimpleImputer(strategy='most_frequent')),
-        
-        # Step 2: Convert categories (like "Full-time") to 1s and 0s
         ('onehot', OneHotEncoder(handle_unknown='ignore'))
     ])
 
-    # [FIX] All the following lines *must* also be indented
-
-    # --- Task 2.2.5 & 2.2.6: Define the Master ColumnTransformer ---
-    # This is the "master routing station" that applies the right
-    # pipeline to the right columns.
-    
-    # These are the columns our Phase 1 EDA justified keeping
+    # --- Define the Master ColumnTransformer ---
     text_columns = 'combined_text'
     categorical_columns = ['employment_type', 'required_experience', 'has_company_logo']
     
     preprocessor = ColumnTransformer(
         transformers=[
-            # Apply the 'text_pipeline' to all 'text_columns'
             ('text', text_pipeline, text_columns),
-            
-            # Apply the 'categorical_pipeline' to all 'categorical_columns'
             ('categorical', categorical_pipeline, categorical_columns)
         ],
-        
-        # This is our Rule 30 Justification:
-        # Drop all other columns (like salary_range, department)
-        # that our Phase 1 EDA proved were unusable.
         remainder='drop' 
     )
 
-    # --- Task 2.2.7: Return the Preprocessor ---
-    # [FIX] This 'return' *must* be the last line *inside* the function
     return preprocessor
 
-
-#Test Block
+# --- TEST BLOCK ---
 if __name__ == "__main__":
-    # Load data from the relative path
+    # Load data
     df = pd.read_csv('data/fake_job_postings.csv')
 
-    # Predicts y using the data in X
-    # Define features (X) by dropping the target column
-    X = df.drop('fraudulent', axis=1)
-    # Define the target variable (y)
-    y = df['fraudulent']
+    # Call refactored function
+    df = clean_and_combine_text(df)
 
-        # --- MANUAL TEXT CLEANING (THE FIX) ---
-    # We must fill NaNs *before* the pipeline
-    # to avoid the "Wrong Mail" error.
-    # --- MANUAL TEXT CLEANING & COMBINING (THE FIX) ---
-    # We must fill NaNs *before* combining
-    text_cols_to_combine = ['title', 'description', 'requirements']
-    df[text_cols_to_combine] = df[text_cols_to_combine].fillna('')
-
-    # --- NEW COMBINE STEP (Task 2.2.3 Fix) ---
-    # Create the *single* text column that our pipeline expects
-    # We use .apply() to join the text from each row
-    df['combined_text'] = df[text_cols_to_combine].apply(lambda x: ' '.join(x), axis=1)
-    # ---
-
-    # Now, define X and y
+    # Define X and y
     X = df.drop('fraudulent', axis=1)
     y = df['fraudulent']
-    # ---
-    # Split data: 80% train, 20% test
-    # stratify=y preserves the 4.8% imbalance in both sets
-
+    
+    # Split data
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, 
-        test_size=0.2,      #Uses 20% for testing
-        random_state=42,    #Ensures the exact same split every time for reproducible tests.
-        stratify=y          #Ensures the 4.8% imbalance is preserved equally in both the train and test sets.
+        test_size=0.2, 
+        random_state=42, 
+        stratify=y 
     )
-
-    # confirmation message
+    
     print("Test data loaded and split successfully.")
 
-    # --- Task 2.3.3: Partner A's Test Execution ---
-    # This is where we "turn the key" on the engine
-
-    print("Testing the preprocessor engine...")
-
-    # 1. Call your function to "get" the engine
+    # Execute the test
     preprocessor = create_preprocessor()
-
-    # 2. Fit the engine *ONLY* on the training data
-    # This is where the imputer 'learns' the most_frequent
-    # and the Tfidf 'learns' the 5,000 words.
     preprocessor.fit(X_train, y_train)
 
-    # 3. Transform the training data
     X_train_transformed = preprocessor.transform(X_train)
-
-    # 4. Transform the TEST data
-    # We *only* .transform() here. We DO NOT .fit() again.
-    # This prevents data leakage (Rule 5)
     X_test_transformed = preprocessor.transform(X_test)
 
-    # 5. The final proof
     print("--- PREPROCESSOR TEST SUCCESSFUL! ---")
-    print(f"Original X_train shape (rows, columns): {X_train.shape}")
-    print(f"Transformed X_train shape (rows, features): {X_train_transformed.shape}")
-    print(f"Transformed X_test shape (rows, features): {X_test_transformed.shape}")
+    print(f"Original X_train shape: {X_train.shape}")
+    print(f"Transformed X_train shape: {X_train_transformed.shape}")
